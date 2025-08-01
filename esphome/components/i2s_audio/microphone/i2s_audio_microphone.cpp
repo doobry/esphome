@@ -381,13 +381,33 @@ void I2SAudioMicrophone::fix_dc_offset_(std::vector<uint8_t> &data) {
   const size_t bytes_per_sample = this->audio_stream_info_.samples_to_bytes(1);
   const uint32_t total_samples = this->audio_stream_info_.bytes_to_samples(data.size());
   for (uint32_t sample_index = 0; sample_index < total_samples; ++sample_index) {
+    /**
+     * From https://www.musicdsp.org/en/latest/Filters/135-dc-filter.html:
+     *
+     *     y(n) = x(n) - x(n-1) + R * y(n-1)
+     *     R = 1 - (pi * 2 * frequency / samplerate)
+     *
+     * Calculate R value for 40Hz on a 16kHz sample rate:
+     *     R = 1 - (pi * 2 * 40 / 16000)
+     *     R = 0.9842920367
+     *
+     * Transform floating point to bit-shifting approximation:
+     *     output = input - prev_input + R * prev_output
+     *     output = input - prev_input + (prev_output - (prev_output >> S))
+     *
+     * Approximate bit-shift value from R:
+     *     R = 1 - (1 >> S)
+     *     R = 1 - 2^-S
+     *     0.9842920367 = 1 - 2^-S
+     *     S ≈ 6
+     */
     const uint32_t byte_index = sample_index * bytes_per_sample;
-    int32_t sample = audio::unpack_audio_sample_to_q31(&data[byte_index], bytes_per_sample);
-    // Update dc offset, 11 = ~40Hz at 16kHz sample rate
-    this->dc_offset_ += (sample - this->dc_offset_) >> 11;
-    // Apply dc offset
-    sample -= this->dc_offset_;
-    audio::pack_q31_as_audio_sample(sample, &data[byte_index], bytes_per_sample);
+    int32_t input = audio::unpack_audio_sample_to_q31(&data[byte_index], bytes_per_sample);
+    int32_t output =
+        input - this->dc_offset_prev_input_ + (this->dc_offset_prev_output_ - (this->dc_offset_prev_output_ >> 6));
+    this->dc_offset_prev_input_ = input;
+    this->dc_offset_prev_output_ = output;
+    audio::pack_q31_as_audio_sample(output, &data[byte_index], bytes_per_sample);
   }
 }
 
