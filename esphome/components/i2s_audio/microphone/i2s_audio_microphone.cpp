@@ -407,6 +407,10 @@ void I2SAudioMicrophone::fix_dc_offset_(std::vector<uint8_t> &data) {
         input - this->dc_offset_prev_input_ + (this->dc_offset_prev_output_ - (this->dc_offset_prev_output_ >> 6));
     this->dc_offset_prev_input_ = input;
     this->dc_offset_prev_output_ = output;
+
+    output = this->low_pass_prev_output_ + ((output - this->low_pass_prev_output_) >> 2);
+    this->low_pass_prev_output_ = output;
+
     audio::pack_q31_as_audio_sample(output, &data[byte_index], bytes_per_sample);
   }
 }
