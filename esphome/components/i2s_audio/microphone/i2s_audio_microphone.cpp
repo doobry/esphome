@@ -378,33 +378,53 @@ void I2SAudioMicrophone::mic_task(void *params) {
 }
 
 void I2SAudioMicrophone::fix_dc_offset_(std::vector<uint8_t> &data) {
+  /**
+   * From https://www.musicdsp.org/en/latest/Filters/135-dc-filter.html:
+   *
+   *     y(n) = x(n) - x(n-1) + R * y(n-1)
+   *     R = 1 - (pi * 2 * frequency / samplerate)
+   *
+   * From https://en.wikipedia.org/wiki/Hearing_range:
+   *     The human range is commonly given as 20Hz up.
+   *
+   * From https://en.wikipedia.org/wiki/High-resolution_audio:
+   *     A reasonable upper bound for sample rate seems to be 96kHz.
+   *
+   * Calculate R value for 20Hz on a 96kHz sample rate:
+   *     R = 1 - (pi * 2 * 20 / 96000)
+   *     R = 0.9986910031
+   *
+   * Transform floating point to bit-shifting approximation:
+   *     output = input - prev_input + R * prev_output
+   *     output = input - prev_input + (prev_output - (prev_output >> S))
+   *
+   * Approximate bit-shift value S from R:
+   *     R = 1 - (1 >> S)
+   *     R = 1 - (1 / 2^S)
+   *     R = 1 - 2^-S
+   *     0.9986910031 = 1 - 2^-S
+   *     S = 9.57732 ~= 10
+   *
+   * Actual R from S:
+   *     R = 1 - 2^-10 = 0.9990234375
+   *
+   * Confirm this has effect outside human hearing on 96000kHz sample:
+   *     0.9990234375 = 1 - (pi * 2 * f / 96000)
+   *     f = 14.9208Hz
+   *
+   * Confirm this has effect outside human hearing on PDM 16kHz sample:
+   *     0.9990234375 = 1 - (pi * 2 * f / 16000)
+   *     f = 2.4868Hz
+   *
+   */
+  const uint8_t dc_filter_shift = 10;
   const size_t bytes_per_sample = this->audio_stream_info_.samples_to_bytes(1);
   const uint32_t total_samples = this->audio_stream_info_.bytes_to_samples(data.size());
   for (uint32_t sample_index = 0; sample_index < total_samples; ++sample_index) {
-    /**
-     * From https://www.musicdsp.org/en/latest/Filters/135-dc-filter.html:
-     *
-     *     y(n) = x(n) - x(n-1) + R * y(n-1)
-     *     R = 1 - (pi * 2 * frequency / samplerate)
-     *
-     * Calculate R value for 40Hz on a 16kHz sample rate:
-     *     R = 1 - (pi * 2 * 40 / 16000)
-     *     R = 0.9842920367
-     *
-     * Transform floating point to bit-shifting approximation:
-     *     output = input - prev_input + R * prev_output
-     *     output = input - prev_input + (prev_output - (prev_output >> S))
-     *
-     * Approximate bit-shift value from R:
-     *     R = 1 - (1 >> S)
-     *     R = 1 - 2^-S
-     *     0.9842920367 = 1 - 2^-S
-     *     S ≈ 6
-     */
     const uint32_t byte_index = sample_index * bytes_per_sample;
     int32_t input = audio::unpack_audio_sample_to_q31(&data[byte_index], bytes_per_sample);
-    int32_t output =
-        input - this->dc_offset_prev_input_ + (this->dc_offset_prev_output_ - (this->dc_offset_prev_output_ >> 6));
+    int32_t output = input - this->dc_offset_prev_input_ +
+                     (this->dc_offset_prev_output_ - (this->dc_offset_prev_output_ >> dc_filter_shift));
     this->dc_offset_prev_input_ = input;
     this->dc_offset_prev_output_ = output;
     audio::pack_q31_as_audio_sample(output, &data[byte_index], bytes_per_sample);
